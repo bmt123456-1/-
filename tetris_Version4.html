@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>俄罗斯方块 - Tetris</title>
+  <style>
+    body { background: #222; color: #fff; text-align: center; margin:0;}
+    #main-ui { width:350px; margin:20px auto;}
+    canvas { background: #111; display: block; margin: 20px auto; box-shadow: 0 0 10px #000; }
+    #score { font-size: 24px; margin-top: 4px; }
+    #controls { margin:15px auto; }
+    #controls button { padding:8px 20px; font-size:16px; margin:5px; border-radius:5px; background:#444; color:#fff; border:none; cursor:pointer; }
+    #controls button:hover { background:#888; }
+    #music-control { margin-top: 10px;}
+    #gameover { color: red; font-size: 28px; margin:13px;}
+    #difficulty-box { margin-bottom: 24px; }
+    #difficulty-box select { font-size:18px; padding:3px 9px; }
+    #start-screen {
+      position: fixed; top: 0; left: 0; width:100vw; height:100vh;
+      background: rgba(30,30,40,0.93); z-index: 20;
+      display: flex; flex-direction: column;  justify-content: center; align-items: center;
+    }
+    #start-title {
+      font-size:42px; margin-bottom:18px; letter-spacing:6px; color:#ffeb3b;
+      text-shadow: 0 2px 18px #000, 0 1px 0 #333; font-family: '微软雅黑',sans-serif;
+    }
+    #start-desc {
+      font-size:21px; margin-bottom:34px; color: #bbb;
+    }
+    #start-btn {
+      padding:16px 46px; font-size:28px; border: none; border-radius: 7px;
+      background: linear-gradient(90deg,#08F,#0FF,#8FF); color: #222; font-weight: bold;
+      box-shadow: 0 2px 8px #000; cursor: pointer; transition: background 0.2s;
+    }
+    #start-btn:hover { background: linear-gradient(90deg,#0FF,#44F,#FFF); color:#222; }
+    #music-control { display:inline-block; margin-left:24px;}
+    #music-btn { font-size:17px; }
+    @media (max-width:500px){
+      #main-ui {width:98vw;}
+      canvas{max-width:96vw;}
+    }
+  </style>
+</head>
+<body>
+  <!-- 封面开始界面 -->
+  <div id="start-screen">
+    <div id="start-title">俄罗斯方块</div>
+    <div id="start-desc">
+      使用方向键 <b>← → ↓ ↑</b> 控制，下落、旋转、移动方块。<br>
+      <span style="font-size:16px;opacity:.8;">可选难度，支持暂停/重开/退出和背景音乐</span>
+    </div>
+    <div id="difficulty-box">
+      难度:
+      <select id="difficulty">
+        <option value="easy">简单</option>
+        <option value="normal" selected>普通</option>
+        <option value="hard">困难</option>
+      </select>
+    </div>
+    <button id="start-btn">开始游戏</button>
+  </div>
+  <div id="main-ui" style="display:none;">
+    <canvas id="tetris" width="300" height="600"></canvas>
+    <div id="score">得分: 0</div>
+    <div id="controls">
+      <button id="pause-btn">暂停</button>
+      <button id="restart-btn">重新开始</button>
+      <button id="exit-btn">退出</button>
+      <span id="music-control">
+        <button id="music-btn">🎼 暂停音乐</button>
+      </span>
+    </div>
+    <div id="gameover"></div>
+  </div>
+  <!-- 背景音乐 -->
+  <audio id="bgm" loop>
+    <source src="https://www.bensound.com/bensound-music/bensound-slowmotion.mp3" type="audio/mpeg">
+    您的浏览器不支持音频播放。
+  </audio>
+  <script>
+    // ----------- 音乐部分 -----------
+    const bgm = document.getElementById('bgm');
+    const musicBtn = document.getElementById('music-btn');
+    let musicPlaying = true;
+    bgm.volume = 0.32;
+    musicBtn.onclick = function() {
+      if (bgm.paused) {
+        bgm.play().catch(()=>{});
+        musicBtn.textContent = '🎼 暂停音乐';
+        musicPlaying = true;
+      } else {
+        bgm.pause();
+        musicBtn.textContent = '🎵 播放音乐';
+        musicPlaying = false;
+      }
+    };
+
+    function ensurePlay() {
+      if (bgm.paused && musicPlaying) bgm.play();
+    }
+
+    // ----------- UI控件 -----------
+    const startScreen = document.getElementById('start-screen');
+    const startBtn = document.getElementById('start-btn');
+    const mainUI = document.getElementById('main-ui');
+    const pauseBtn = document.getElementById('pause-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const exitBtn = document.getElementById('exit-btn');
+    const scorePanel = document.getElementById('score');
+    const gameOverPanel = document.getElementById('gameover');
+    const difficultySel = document.getElementById('difficulty');
+    let diffVal = 'normal';
+
+    difficultySel.onchange = () => diffVal = difficultySel.value;
+
+    // ----------- 游戏变量 -----------
+    const canvas = document.getElementById('tetris');
+    const ctx = canvas.getContext('2d');
+    const ROWS = 20, COLS = 10, BLOCK = 30;
+    let board, cur, score, gameover, tick, loopGap, paused, reqId;
+    const DIFF_CONFIG = {
+      easy: 32,         // tick/week
+      normal: 20,
+      hard: 12
+    };
+
+    // 7种形状和颜色
+    const SHAPES = [
+      [[1,1,1,1]],                // I
+      [[2,0,0],[2,2,2]],          // J
+      [[0,0,3],[3,3,3]],          // L
+      [[4,4],[4,4]],              // O
+      [[0,5,5],[5,5,0]],          // S
+      [[0,6,0],[6,6,6]],          // T
+      [[7,7,0],[0,7,7]]           // Z
+    ];
+    const COLORS = [
+      '#000', '#0ff', '#00f', '#fa0',
+      '#ff0', '#0f0', '#808', '#f00'
+    ];
+
+    // ----------- 核心渲染与逻辑 -----------
+    function drawBlock(x, y, n) {
+      ctx.fillStyle = COLORS[n];
+      ctx.fillRect(x*BLOCK, y*BLOCK, BLOCK, BLOCK);
+      ctx.strokeStyle = "#222";
+      ctx.strokeRect(x*BLOCK, y*BLOCK, BLOCK, BLOCK);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // 画底板
+      for (let y=0; y<ROWS; y++)
+        for (let x=0; x<COLS; x++)
+          if (board[y][x]) drawBlock(x, y, board[y][x]);
+      // 画当前
+      if (cur)
+      for (let [x, y] of curPos()) {
+        if (y>=0) drawBlock(x, y, cur.n);
+      }
+    }
+
+    function newPiece() {
+      let i = Math.floor(Math.random()*SHAPES.length);
+      cur = { shape: SHAPES[i], n: i+1, x: 3, y: -2, r: 0 };
+    }
+
+    function rotate(mat) {
+      return mat[0].map((_,i)=>mat.map(row=>row[i]).reverse());
+    }
+    function curPos(dx=0, dy=0, dr=0) {
+      let s = cur.shape;
+      for(let j=0;j<(cur.r+dr)%4;j++) s = rotate(s);
+      let arr=[], mat=s;
+      for(let y=0;y<mat.length;y++)
+        for(let x=0;x<mat[0].length;x++)
+          if(mat[y][x]) arr.push([cur.x+x+dx, cur.y+y+dy]);
+      return arr;
+    }
+    function valid(posArr) {
+      for(let [x,y] of posArr){
+        if(x<0||x>=COLS||y>=ROWS)return false;
+        if(y>=0 && board[y][x]) return false;
+      }
+      return true;
+    }
+    function merge() {
+      for(let [x, y] of curPos())
+        if(y>=0) board[y][x] = cur.n;
+    }
+    function clearLines() {
+      let lines=0;
+      for(let y=ROWS-1; y>=0; y--){
+        if(board[y].every(cell=>cell)){
+          board.splice(y,1);
+          board.unshift(Array(COLS).fill(0));
+          lines++; y++;
+        }
+      }
+      if(lines) score += lines*100;
+      scorePanel.innerText = "得分: " + score;
+    }
+    function freeze() {
+      merge();
+      clearLines();
+      newPiece();
+      if(!valid(curPos())){
+        gameover = true;
+        pauseGame();
+        draw();
+        gameOverPanel.innerText = '游戏结束！';
+      }
+    }
+
+    // ----------- 控制按钮、流程和事件 -----------
+    function gameLoop() {
+      if(paused || gameover) return;
+      tick++;
+      if(tick%loopGap===0){ // 落下速度
+        if(valid(curPos(0,1))) cur.y++;
+        else freeze();
+        draw();
+      }
+      reqId = requestAnimationFrame(gameLoop);
+    }
+
+    function reset() {
+      board = Array.from({length: ROWS}, ()=>Array(COLS).fill(0));
+      score = 0;
+      gameover = false;
+      tick = 0;
+      paused = false;
+      cur = undefined;
+      reqId && cancelAnimationFrame(reqId);
+      reqId = undefined;
+      scorePanel.innerText = "得分: 0";
+      gameOverPanel.innerText = '';
+      pauseBtn.textContent = '暂停';
+    }
+
+    function startGame() {
+      // 难度根据选择设置
+      loopGap = DIFF_CONFIG[diffVal] || 20;
+      mainUI.style.display = '';
+      startScreen.style.display='none';
+      reset();
+      newPiece();
+      draw();
+      paused = false;
+      reqId = requestAnimationFrame(gameLoop);
+      try { bgm.play(); musicBtn.textContent = '🎼 暂停音乐'; musicPlaying = true; } catch(e){}
+    }
+
+    function pauseGame(){
+      if(!paused){
+        paused = true;
+        musicPlaying = false;
+        bgm.pause();
+        pauseBtn.textContent = "继续";
+      }
+    }
+    function resumeGame(){
+      if(paused && !gameover){
+        paused = false;
+        if(musicBtn) musicBtn.textContent = '🎼 暂停音乐';
+        musicPlaying = true;
+        bgm.play().catch(()=>{});
+        pauseBtn.textContent = "暂停";
+        reqId = requestAnimationFrame(gameLoop);
+      }
+    }
+
+    // 按钮事件
+    pauseBtn.onclick = function(){
+      if(paused) resumeGame();
+      else pauseGame();
+    };
+    restartBtn.onclick = function(){
+      reset();
+      newPiece();
+      draw();
+      paused = false;
+      musicPlaying = true;
+      bgm.play().catch(()=>{});
+      pauseBtn.textContent = '暂停';
+      reqId = requestAnimationFrame(gameLoop);
+    };
+    exitBtn.onclick = function(){
+      mainUI.style.display='none';
+      startScreen.style.display='';
+      reset();
+      bgm.pause();
+      musicBtn.textContent = "🎼 暂停音乐";
+      musicPlaying = true;
+    };
+
+    // 键盘事件
+    document.addEventListener('keydown', e=>{
+      if(mainUI.style.display==='none') return;
+      if(paused || gameover) return;
+      ensurePlay();
+      if(e.key==='ArrowLeft'){
+        if(valid(curPos(-1,0))) cur.x--;
+        draw();
+      }
+      if(e.key==='ArrowRight'){
+        if(valid(curPos(1,0))) cur.x++;
+        draw();
+      }
+      if(e.key==='ArrowDown'){
+        if(valid(curPos(0,1))) cur.y++;
+        else freeze();
+        draw();
+      }
+      if(e.key==='ArrowUp'){
+        if(valid(curPos(0,0,1))) cur.r=(cur.r+1)%4;
+        draw();
+      }
+      // 空格键 = 快速下落
+      if(e.key===' '){
+        while(valid(curPos(0,1))) cur.y++;
+        freeze();
+        draw();
+      }
+      // P 或 p = 暂停/恢复
+      if(e.key==='p'||e.key==='P'){
+        if(paused) resumeGame();
+        else pauseGame();
+      }
+      // R 或 r = 重开
+      if(e.key==='r'||e.key==='R'){
+        restartBtn.click();
+      }
+      // ESC退出
+      if(e.key==='Escape'){
+        exitBtn.click();
+      }
+    });
+
+    // 启动按钮/难度选择
+    startBtn.onclick = ()=>{
+      diffVal = difficultySel.value;
+      startGame();
+    };
+
+    // 自动播放背景音乐（若交互限制，则第一次键盘/点击会触发
+    window.addEventListener('keydown', ensurePlay);
+    window.addEventListener('mousedown', ensurePlay);
+    canvas.addEventListener('click', ensurePlay);
+
+    // 初始化时暂停UI
+    mainUI.style.display='none';
+    scorePanel.innerText = "得分: 0";
+    gameOverPanel.innerText = '';
+  </script>
+</body>
+</html>
